@@ -15,12 +15,12 @@ const config = {
 };
 
 const NODE_TYPE_GROUPS = [
-  { tier: 0, names: ['House', 'Apartment'], secMin: 1, secMax: 1 },
-  { tier: 1, names: ['Donut Shop', 'Coffee Shop', 'Restaurant', 'Candy Store', 'Bookstore', 'Arcade'], secMin: 1, secMax: 2 },
-  { tier: 2, names: ['Grocery Store', 'Furniture Store', 'Hardware Store', 'Pharmacy', 'Clothing Store'], secMin: 2, secMax: 3 },
-  { tier: 2.5, names: ['Train Station', 'Hospital', 'Water Treatment', 'School', 'Office Building', 'Town Hall'], secMin: 2, secMax: 4 },
-  { tier: 3.5, names: ['Pharma Co', 'Tech Co', 'Finance Co', 'Insurance Co', 'Media Co'], secMin: 3, secMax: 4 },
-  { tier: 4.5, names: ['Military Base', 'Police HQ', 'Bank', 'Power Station', 'Research Lab'], secMin: 4, secMax: 5 },
+  { tier: 0, names: ['House', 'Apartment'], secMin: 1, secMax: 1, resMin: 1, resMax: 1 },
+  { tier: 1, names: ['Donut Shop', 'Coffee Shop', 'Restaurant', 'Candy Store', 'Bookstore', 'Arcade'], secMin: 1, secMax: 2, resMin: 1, resMax: 2 },
+  { tier: 2, names: ['Grocery Store', 'Furniture Store', 'Hardware Store', 'Pharmacy', 'Clothing Store'], secMin: 2, secMax: 3, resMin: 2, resMax: 3 },
+  { tier: 2.5, names: ['Train Station', 'Hospital', 'Water Treatment', 'School', 'Office Building', 'Town Hall'], secMin: 2, secMax: 4, resMin: 2, resMax: 4 },
+  { tier: 3.5, names: ['Pharma Co', 'Tech Co', 'Finance Co', 'Insurance Co', 'Media Co'], secMin: 3, secMax: 4, resMin: 3, resMax: 4 },
+  { tier: 4.5, names: ['Military Base', 'Police HQ', 'Bank', 'Power Station', 'Research Lab'], secMin: 4, secMax: 5, resMin: 4, resMax: 5 },
 ];
 
 const UPGRADE_OPTIONS = [
@@ -68,6 +68,7 @@ const state = {
     open: false,
     selectedIndex: 0,
     itemRects: [],
+    bounds: null,
   },
   nodes: [],
   selectedId: null,
@@ -146,10 +147,14 @@ function upgradeCost(level) {
   return 100 * level;
 }
 
+function shopItemCount() {
+  return UPGRADE_OPTIONS.length + 1;
+}
+
 function toggleShop() {
   state.shop.open = !state.shop.open;
   if (state.shop.open) {
-    state.shop.selectedIndex = clamp(state.shop.selectedIndex, 0, UPGRADE_OPTIONS.length - 1);
+    state.shop.selectedIndex = clamp(state.shop.selectedIndex, 0, shopItemCount() - 1);
   }
 }
 
@@ -204,7 +209,13 @@ function pickNodeType(distance) {
     if (roll <= 0) {
       const group = candidates[i];
       const name = group.names[randomInt(0, group.names.length - 1)];
-      return { name, secMin: group.secMin, secMax: group.secMax };
+      return {
+        name,
+        secMin: group.secMin,
+        secMax: group.secMax,
+        resMin: group.resMin,
+        resMax: group.resMax,
+      };
     }
   }
   const fallback = candidates[candidates.length - 1];
@@ -212,6 +223,8 @@ function pickNodeType(distance) {
     name: fallback.names[0],
     secMin: fallback.secMin,
     secMax: fallback.secMax,
+    resMin: fallback.resMin,
+    resMax: fallback.resMax,
   };
 }
 
@@ -275,7 +288,7 @@ function createNode(x, y, status) {
     type: typeInfo.name,
     ip,
     security: randomInt(typeInfo.secMin, typeInfo.secMax),
-    resources: 1 + Math.floor(Math.random() * 5),
+    resources: randomInt(typeInfo.resMin, typeInfo.resMax),
     action: null,
     failTimer: 0,
     scanLevel: 0,
@@ -370,7 +383,7 @@ function resolveHack(node) {
   }
   state.player.alert = clamp(state.player.alert + 1, 0, config.maxAlert);
   triggerAlertPulse();
-  logEvent(`alert level ${stars(state.player.alert)}`);
+  logEvent('alert level increased');
   if (state.player.alert >= config.maxAlert) {
     state.gameOver = true;
   }
@@ -402,7 +415,7 @@ function update(dt) {
     while (state.alertDecayTimer >= 60 && state.player.alert > 0) {
       state.player.alert -= 1;
       state.alertDecayTimer -= 60;
-      logEvent(`alert level ${stars(state.player.alert)}`);
+      logEvent('alert level decreased');
     }
   } else if (state.player.alert === 0) {
     state.alertDecayTimer = 0;
@@ -591,8 +604,14 @@ function drawShop() {
     const next = info.maxed ? 'MAX'.padEnd(5, ' ') : stars(info.level + 1).padEnd(5, ' ');
     const price = info.maxed ? '----' : `$${info.cost}`;
     return {
+      type: 'upgrade',
+      upgradeIndex: UPGRADE_OPTIONS.indexOf(option),
       line: `${option.label.padEnd(16, ' ')} ${current} -> ${next}  ${price}`,
     };
+  });
+  items.push({
+    type: 'exit',
+    line: 'Exit the shop',
   });
 
   const headerLines = [''];
@@ -623,12 +642,15 @@ function drawShop() {
     const lineIndex = firstItemIndex + i;
     state.shop.itemRects.push({
       index: i,
+      type: items[i].type,
+      upgradeIndex: items[i].upgradeIndex ?? null,
       x,
       y: y + lineIndex * lineHeight,
       width,
       height: lineHeight,
     });
   }
+  state.shop.bounds = { x, y, width, height };
   state.ui.rects.push({ x, y, width, height });
 }
 
@@ -990,11 +1012,15 @@ function onKeyDown(event) {
   }
   if (state.shop.open) {
     if (key === 'arrowup') {
-      state.shop.selectedIndex = (state.shop.selectedIndex - 1 + UPGRADE_OPTIONS.length) % UPGRADE_OPTIONS.length;
+      state.shop.selectedIndex = (state.shop.selectedIndex - 1 + shopItemCount()) % shopItemCount();
     } else if (key === 'arrowdown') {
-      state.shop.selectedIndex = (state.shop.selectedIndex + 1) % UPGRADE_OPTIONS.length;
+      state.shop.selectedIndex = (state.shop.selectedIndex + 1) % shopItemCount();
     } else if (key === 'enter') {
-      attemptPurchase(state.shop.selectedIndex);
+      if (state.shop.selectedIndex === UPGRADE_OPTIONS.length) {
+        toggleShop();
+      } else {
+        attemptPurchase(state.shop.selectedIndex);
+      }
     } else if (key === 'u' || key === 'escape') {
       toggleShop();
     }
@@ -1073,10 +1099,22 @@ function onPointerUp(event) {
   const y = event.clientY - rect.top;
   if (state.shop.open) {
     if (!state.pointer.dragging) {
+      const bounds = state.shop.bounds;
+      if (bounds && !isPointInRect(x, y, bounds)) {
+        toggleShop();
+        state.pointer.active = false;
+        state.pointer.dragging = false;
+        canvas.releasePointerCapture(event.pointerId);
+        return;
+      }
       for (const item of state.shop.itemRects) {
         if (isPointInRect(x, y, item)) {
           state.shop.selectedIndex = item.index;
-          attemptPurchase(item.index);
+          if (item.type === 'exit') {
+            toggleShop();
+          } else {
+            attemptPurchase(item.upgradeIndex ?? item.index);
+          }
           break;
         }
       }
