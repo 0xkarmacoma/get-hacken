@@ -9,6 +9,9 @@ const config = {
   scanStepSeconds: 1.5,
   maxAlert: 5,
   maxScanLevel: 3,
+  maxUpgradeLevel: 5,
+  labelOffset: 10,
+  logLines: 6,
 };
 
 const NODE_TYPE_GROUPS = [
@@ -18,6 +21,12 @@ const NODE_TYPE_GROUPS = [
   { tier: 2.5, names: ['Train Station', 'Hospital', 'Water Treatment', 'School', 'Office Building', 'Town Hall'], secMin: 2, secMax: 4 },
   { tier: 3.5, names: ['Pharma Co', 'Tech Co', 'Finance Co', 'Insurance Co', 'Media Co'], secMin: 3, secMax: 4 },
   { tier: 4.5, names: ['Military Base', 'Police HQ', 'Bank', 'Power Station', 'Research Lab'], secMin: 4, secMax: 5 },
+];
+
+const UPGRADE_OPTIONS = [
+  { id: 'hacking', label: 'Hacking Level', shortLabel: 'Hack Lvl.' },
+  { id: 'scanning', label: 'Scanning Level', shortLabel: 'Scan Lvl.' },
+  { id: 'stealth', label: 'Stealth Level', shortLabel: 'Stealth' },
 ];
 
 const state = {
@@ -36,7 +45,30 @@ const state = {
     stealth: 1,
     alert: 0,
   },
+  usedIps: new Set(),
   alertDecayTimer: 0,
+  alertPulse: {
+    active: false,
+    time: 0,
+    duration: 0.6,
+    seed: 0,
+  },
+  moneyDisplay: 0,
+  moneyAnim: {
+    active: false,
+    time: 0,
+    duration: 0.9,
+    startValue: 0,
+    endValue: 0,
+  },
+  log: {
+    entries: [],
+  },
+  shop: {
+    open: false,
+    selectedIndex: 0,
+    itemRects: [],
+  },
   nodes: [],
   selectedId: null,
   gameOver: false,
@@ -67,6 +99,58 @@ function isPointInRect(x, y, rect) {
 
 function randomInt(min, max) {
   return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+function generateIp() {
+  const oct1Options = [10, 20, 30, 40];
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const oct1 = oct1Options[randomInt(0, oct1Options.length - 1)];
+    const oct2 = randomInt(0, 99);
+    const oct3 = randomInt(0, 99);
+    const oct4 = randomInt(1, 254);
+    const ip = `${oct1}.${oct2}.${oct3}.${oct4}`;
+    if (!state.usedIps.has(ip)) {
+      state.usedIps.add(ip);
+      return ip;
+    }
+  }
+  return `${oct1Options[0]}.${randomInt(0, 255)}.${randomInt(0, 255)}.${randomInt(1, 254)}`;
+}
+
+function triggerAlertPulse() {
+  state.alertPulse.active = true;
+  state.alertPulse.time = 0;
+  state.alertPulse.seed = Math.random() * 1000;
+}
+
+function logEvent(message) {
+  state.log.entries.push(`> ${message}`);
+  while (state.log.entries.length > config.logLines) {
+    state.log.entries.shift();
+  }
+}
+
+function easeOutCubic(t) {
+  return 1 - Math.pow(1 - t, 3);
+}
+
+function addMoney(amount) {
+  state.player.money += amount;
+  state.moneyAnim.active = true;
+  state.moneyAnim.time = 0;
+  state.moneyAnim.startValue = state.moneyDisplay;
+  state.moneyAnim.endValue = state.player.money;
+}
+
+function upgradeCost(level) {
+  return 100 * level;
+}
+
+function toggleShop() {
+  state.shop.open = !state.shop.open;
+  if (state.shop.open) {
+    state.shop.selectedIndex = clamp(state.shop.selectedIndex, 0, UPGRADE_OPTIONS.length - 1);
+  }
 }
 
 function stars(count) {
@@ -131,33 +215,71 @@ function pickNodeType(distance) {
   };
 }
 
+function getUpgradeState(option) {
+  const level = state.player[option.id];
+  const maxed = level >= config.maxUpgradeLevel;
+  const cost = maxed ? null : upgradeCost(level);
+  return {
+    level,
+    maxed,
+    cost,
+    canBuy: !maxed && state.player.money >= cost,
+  };
+}
+
+function attemptPurchase(index) {
+  const option = UPGRADE_OPTIONS[index];
+  if (!option) {
+    return;
+  }
+  const info = getUpgradeState(option);
+  if (info.maxed) {
+    logEvent(`${option.label} maxed`);
+    return;
+  }
+  if (!info.canBuy) {
+    logEvent(`funds low ${option.label}`);
+    return;
+  }
+  addMoney(-info.cost);
+  state.player[option.id] += 1;
+  logEvent(`purchase ${option.label} ${stars(state.player[option.id])} -$${info.cost}`);
+}
+
 function createNode(x, y, status) {
   if (status === 'home') {
+    const ip = '10.0.0.1';
+    state.usedIps.add(ip);
     return {
       id: nextNodeId++,
       x,
       y,
       status,
       type: 'Home',
+      ip,
       security: 1,
       resources: 1,
       action: null,
       failTimer: 0,
       scanLevel: config.maxScanLevel,
+      vulnerabilities: 0,
     };
   }
   const typeInfo = pickNodeType(distanceFromHome(x, y));
+  const ip = generateIp();
   return {
     id: nextNodeId++,
     x,
     y,
     status,
     type: typeInfo.name,
+    ip,
     security: randomInt(typeInfo.secMin, typeInfo.secMax),
     resources: 1 + Math.floor(Math.random() * 5),
     action: null,
     failTimer: 0,
     scanLevel: 0,
+    vulnerabilities: 0,
   };
 }
 
@@ -206,9 +328,8 @@ function startScan(node) {
   if (!node || node.status === 'home' || node.status === 'hacked' || node.action || state.gameOver) {
     return;
   }
-  if (node.scanLevel >= config.maxScanLevel) {
-    return;
-  }
+  const scanLabel = node.scanLevel < config.maxScanLevel ? 'scanning' : 'vuln scan';
+  logEvent(`${scanLabel} ${node.ip}...`);
   node.action = {
     type: 'scan',
     start: state.time,
@@ -234,12 +355,22 @@ function resolveHack(node) {
   if (Math.random() <= chance) {
     node.status = 'hacked';
     node.scanLevel = config.maxScanLevel;
-    state.player.money += node.resources * 25;
+    const reward = node.resources * 25;
+    addMoney(reward);
+    logEvent(`successfully hacked ${node.ip} reward $${reward}`);
     revealAdjacent(node);
     return;
   }
   node.failTimer = 1.5;
+  logEvent(`hack failed ${node.ip}`);
+  const stealthChance = clamp((state.player.stealth - 1) * 0.15, 0, 0.6);
+  if (Math.random() < stealthChance) {
+    logEvent(`stealth bypass ${node.ip} alert suppressed`);
+    return;
+  }
   state.player.alert = clamp(state.player.alert + 1, 0, config.maxAlert);
+  triggerAlertPulse();
+  logEvent(`alert level ${stars(state.player.alert)}`);
   if (state.player.alert >= config.maxAlert) {
     state.gameOver = true;
   }
@@ -247,11 +378,31 @@ function resolveHack(node) {
 
 function update(dt) {
   state.time += dt;
+  if (state.alertPulse.active) {
+    state.alertPulse.time += dt;
+    if (state.alertPulse.time >= state.alertPulse.duration) {
+      state.alertPulse.active = false;
+    }
+  }
+  if (state.moneyAnim.active) {
+    state.moneyAnim.time += dt;
+    const t = clamp(state.moneyAnim.time / state.moneyAnim.duration, 0, 1);
+    const eased = easeOutCubic(t);
+    const value = state.moneyAnim.startValue + (state.moneyAnim.endValue - state.moneyAnim.startValue) * eased;
+    state.moneyDisplay = Math.round(value);
+    if (t >= 1) {
+      state.moneyAnim.active = false;
+      state.moneyDisplay = state.moneyAnim.endValue;
+    }
+  } else {
+    state.moneyDisplay = state.player.money;
+  }
   if (!state.gameOver && state.player.alert > 0) {
     state.alertDecayTimer += dt;
     while (state.alertDecayTimer >= 60 && state.player.alert > 0) {
       state.player.alert -= 1;
       state.alertDecayTimer -= 60;
+      logEvent(`alert level ${stars(state.player.alert)}`);
     }
   } else if (state.player.alert === 0) {
     state.alertDecayTimer = 0;
@@ -269,9 +420,24 @@ function update(dt) {
       continue;
     }
     if (node.action.type === 'scan') {
-      node.scanLevel = Math.min(config.maxScanLevel, node.scanLevel + 1);
-      if (node.status === 'unknown') {
-        node.status = 'scanned';
+      if (node.scanLevel < config.maxScanLevel) {
+        node.scanLevel = Math.min(config.maxScanLevel, node.scanLevel + 1);
+        if (node.status === 'unknown') {
+          node.status = 'scanned';
+        }
+        if (node.scanLevel === 1) {
+          logEvent(`${node.ip} identified as ${node.type.toLowerCase()}`);
+        } else if (node.scanLevel === 2) {
+          logEvent(`${node.ip} security ${stars(node.security)}`);
+        } else if (node.scanLevel === 3) {
+          logEvent(`${node.ip} resources ${stars(node.resources)}`);
+        }
+      } else if (node.security > 1) {
+        node.security = Math.max(1, node.security - 1);
+        node.vulnerabilities += 1;
+        logEvent(`vulnerability found ${node.ip}`);
+      } else {
+        logEvent(`vuln scan clean ${node.ip}`);
       }
     } else if (node.action.type === 'hack') {
       resolveHack(node);
@@ -324,9 +490,24 @@ function maxPairLength(pairs) {
   return max;
 }
 
+function maxLineLength(lines) {
+  let max = 0;
+  for (const line of lines) {
+    max = Math.max(max, line.length);
+  }
+  return max;
+}
+
 function frameColumnsForPairs(title, pairs, minCols) {
   const labelLength = title ? title.length + 2 : 0;
   const contentLength = maxPairLength(pairs);
+  const innerWidth = Math.max(contentLength, labelLength, minCols - 2);
+  return innerWidth + 2;
+}
+
+function frameColumnsForLines(title, lines, minCols) {
+  const labelLength = title ? title.length + 2 : 0;
+  const contentLength = maxLineLength(lines);
   const innerWidth = Math.max(contentLength, labelLength, minCols - 2);
   return innerWidth + 2;
 }
@@ -344,8 +525,11 @@ function buildFrameLines(title, lines, cols) {
   return [top, ...body, bottom];
 }
 
-function drawFrameLines(lines, x, y, lineHeight) {
+function drawFrameLines(lines, x, y, lineHeight, skipIndex) {
   for (let i = 0; i < lines.length; i += 1) {
+    if (i === skipIndex) {
+      continue;
+    }
     ctx.fillText(lines[i], x, y + i * lineHeight);
   }
 }
@@ -364,15 +548,110 @@ function buildKeyValueLines(pairs, innerWidth) {
   return lines;
 }
 
-function drawHud() {
-  ctx.font = '18px "VT323", "IBM Plex Mono", monospace';
+function drawConsole() {
+  ctx.font = '16px "VT323", "IBM Plex Mono", monospace';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
   ctx.fillStyle = '#8bffb0';
 
+  const lineHeight = 18;
+  const lines = state.log.entries.slice(-config.logLines);
+  while (lines.length < config.logLines) {
+    lines.unshift('');
+  }
+  const cols = frameColumnsForLines('CONSOLE', lines, 28);
+  const frame = buildFrameLines('CONSOLE', lines, cols);
+  const charWidth = ctx.measureText('M').width;
+  const width = frame[0].length * charWidth;
+  const x = state.view.width - width - 20;
+  const y = 16;
+  drawFrameLines(frame, x, y, lineHeight);
+
+  state.ui.rects.push({
+    x,
+    y,
+    width,
+    height: frame.length * lineHeight,
+  });
+}
+
+function drawShop() {
+  ctx.fillStyle = 'rgba(3, 7, 4, 0.92)';
+  ctx.fillRect(0, 0, state.view.width, state.view.height);
+
+  ctx.font = '20px "VT323", "IBM Plex Mono", monospace';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = '#8bffb0';
+
+  const lineHeight = 22;
+  const items = UPGRADE_OPTIONS.map((option) => {
+    const info = getUpgradeState(option);
+    const current = stars(info.level).padEnd(5, ' ');
+    const next = info.maxed ? 'MAX'.padEnd(5, ' ') : stars(info.level + 1).padEnd(5, ' ');
+    const price = info.maxed ? '----' : `$${info.cost}`;
+    return {
+      line: `${option.label.padEnd(16, ' ')} ${current} -> ${next}  ${price}`,
+    };
+  });
+
+  const headerLines = [
+    'Upgrade Console',
+    'Up/Down to select',
+    'Enter or tap to buy',
+    'U to exit',
+    '',
+  ];
+  const itemLines = items.map((item, index) => `${index === state.shop.selectedIndex ? '>' : ' '} ${item.line}`);
+  const footerLines = [
+    '',
+    `Funds $${state.moneyDisplay}`,
+  ];
+  const lines = [...headerLines, ...itemLines, ...footerLines];
+  const cols = frameColumnsForLines('UPGRADE SHOP', lines, 42);
+  const frame = buildFrameLines('UPGRADE SHOP', lines, cols);
+
+  const charWidth = ctx.measureText('M').width;
+  const width = frame[0].length * charWidth;
+  const height = frame.length * lineHeight;
+  const x = (state.view.width - width) / 2;
+  const y = (state.view.height - height) / 2;
+
+  drawFrameLines(frame, x, y, lineHeight);
+
+  const firstItemIndex = headerLines.length + 1;
+  const selectedFrameIndex = firstItemIndex + state.shop.selectedIndex;
+  ctx.fillStyle = '#d7ffe7';
+  ctx.fillText(frame[selectedFrameIndex], x, y + selectedFrameIndex * lineHeight);
+
+  state.shop.itemRects = [];
+  for (let i = 0; i < items.length; i += 1) {
+    const lineIndex = firstItemIndex + i;
+    state.shop.itemRects.push({
+      index: i,
+      x,
+      y: y + lineIndex * lineHeight,
+      width,
+      height: lineHeight,
+    });
+  }
+  state.ui.rects.push({ x, y, width, height });
+}
+
+function drawHud() {
+  drawConsole();
+  if (state.shop.open) {
+    return;
+  }
+  ctx.font = '18px "VT323", "IBM Plex Mono", monospace';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = '#8bffb0';
+  const charWidth = ctx.measureText('M').width;
+
   const lineHeight = 20;
   const statsPairs = [
-    ['Money', `\u0024${state.player.money}`],
+    ['Money', `\u0024${state.moneyDisplay}`],
     ['Hack Lvl.', stars(state.player.hacking)],
     ['Scan Lvl.', stars(state.player.scanning)],
     ['Stealth', stars(state.player.stealth)],
@@ -389,6 +668,9 @@ function drawHud() {
     targetPairs.push(['Status', target.status.toUpperCase()]);
     targetPairs.push(['Security', maskedStars(target.security, securityKnown)]);
     targetPairs.push(['Resources', maskedStars(target.resources, resourcesKnown)]);
+    if (target.status === 'scanned' || target.status === 'hacked') {
+      targetPairs.push(['Vulnerabilities', `${target.vulnerabilities}`]);
+    }
     if (target.action) {
       const bar = progressBar(target.action.progress, 10);
       targetPairs.push(['Action', `${target.action.type.toUpperCase()} ${bar}`]);
@@ -411,17 +693,47 @@ function drawHud() {
 
   const x = 20;
   let y = 16;
-  drawFrameLines(statsFrame, x, y, lineHeight);
+  const alertLineIndex = 1 + statsPairs.findIndex((pair) => pair[0] === 'Alert');
+  const pulseActive = state.alertPulse.active && state.alertPulse.time < state.alertPulse.duration;
+  const blinkActive = state.player.alert >= 4;
+  const blinkOn = !blinkActive || Math.floor(state.time * 4) % 2 === 0;
+  drawFrameLines(statsFrame, x, y, lineHeight, alertLineIndex);
+
+  if (alertLineIndex >= 0) {
+    const alertStars = stars(state.player.alert);
+    const alertValue = blinkOn ? alertStars : ' '.repeat(alertStars.length);
+    const alertContent = buildKeyValueLines([['Alert', alertValue]], innerWidth)[0];
+    const line = `│${alertContent.padEnd(innerWidth, ' ')}│`;
+    const intensity = clamp(state.player.alert / config.maxAlert, 0, 1);
+    const t = state.alertPulse.time / state.alertPulse.duration;
+    const envelope = Math.pow(1 - t, 2);
+    const amplitude = (2 + 6 * intensity) * envelope;
+    const scale = 1 + (0.1 + 0.15 * intensity) * envelope;
+    const shakeX = Math.sin(state.time * 50 + state.alertPulse.seed) * amplitude;
+    const shakeY = Math.cos(state.time * 62 + state.alertPulse.seed * 0.7) * amplitude;
+    const lineX = x;
+    const lineY = y + alertLineIndex * lineHeight;
+    const lineWidth = line.length * charWidth;
+    const centerX = lineX + lineWidth / 2;
+    const centerY = lineY + lineHeight * 0.5;
+
+    if (pulseActive) {
+      ctx.save();
+      ctx.translate(centerX, centerY);
+      ctx.scale(scale, scale);
+      ctx.translate(-centerX, -centerY);
+      ctx.translate(shakeX, shakeY);
+      ctx.fillStyle = '#d7ffe7';
+      ctx.fillText(line, lineX, lineY);
+      ctx.restore();
+    } else {
+      ctx.fillStyle = '#8bffb0';
+      ctx.fillText(line, lineX, lineY);
+    }
+  }
   y += statsFrame.length * lineHeight + 10;
   drawFrameLines(targetFrame, x, y, lineHeight);
 
-  const keysLine = 'Scan (s) / Hack (h) / Select (tab, arrows)';
-  const keysCols = Math.max(minCols, keysLine.length + 2);
-  const keysFrame = buildFrameLines('', [keysLine], keysCols);
-  const footerY = state.view.height - keysFrame.length * lineHeight - 14;
-  drawFrameLines(keysFrame, x, footerY, lineHeight);
-
-  const charWidth = ctx.measureText('M').width;
   const statsRect = {
     x,
     y: 16,
@@ -434,40 +746,90 @@ function drawHud() {
     width: targetFrame[0].length * charWidth,
     height: targetFrame.length * lineHeight,
   };
-  const keysRect = {
-    x,
-    y: footerY,
-    width: keysFrame[0].length * charWidth,
-    height: keysFrame.length * lineHeight,
-  };
-  const keysLineIndex = 1;
-  const keysLineY = footerY + keysLineIndex * lineHeight;
-  const innerX = x + charWidth;
-  const scanLabel = 'Scan (s)';
-  const hackLabel = 'Hack (h)';
-  const scanIndex = keysLine.indexOf(scanLabel);
-  const hackIndex = keysLine.indexOf(hackLabel);
-  const keyActions = [];
-  if (scanIndex >= 0) {
-    keyActions.push({
+  state.ui.rects.push(statsRect, targetRect);
+
+  const actions = [
+    {
       type: 'scan',
-      x: innerX + scanIndex * charWidth,
-      y: keysLineY,
-      width: scanLabel.length * charWidth,
-      height: lineHeight,
-    });
-  }
-  if (hackIndex >= 0) {
-    keyActions.push({
+      label: 'Scan (s)',
+      underlineIndex: 'Scan (s)'.indexOf('(s)') + 1,
+      clickable: true,
+    },
+    {
       type: 'hack',
-      x: innerX + hackIndex * charWidth,
-      y: keysLineY,
-      width: hackLabel.length * charWidth,
-      height: lineHeight,
-    });
+      label: 'Hack (h)',
+      underlineIndex: 'Hack (h)'.indexOf('(h)') + 1,
+      clickable: true,
+    },
+    {
+      type: 'shop',
+      label: 'Shop (u)',
+      underlineIndex: 'Shop (u)'.indexOf('(u)') + 1,
+      clickable: true,
+    },
+    {
+      type: 'select',
+      label: 'Select (tab)',
+      underlineIndex: 'Select (tab)'.indexOf('tab'),
+      clickable: false,
+    },
+  ];
+
+  const gap = 12;
+  const buttonLineHeight = 20;
+  const buttonHeight = 3 * buttonLineHeight;
+  const buttonData = actions.map((action) => {
+    const text = ` ${action.label} `;
+    const cols = text.length + 2;
+    const frame = buildFrameLines('', [text], cols);
+    const width = frame[0].length * charWidth;
+    return { action, text, frame, width };
+  });
+  const totalWidth = buttonData.reduce((sum, button) => sum + button.width, 0) + gap * (buttonData.length - 1);
+  const maxWidth = state.view.width - 40;
+  const rows = [];
+  if (totalWidth > maxWidth && buttonData.length > 2) {
+    const split = Math.ceil(buttonData.length / 2);
+    rows.push(buttonData.slice(0, split));
+    rows.push(buttonData.slice(split));
+  } else {
+    rows.push(buttonData);
   }
-  state.ui.rects = [statsRect, targetRect, keysRect];
-  state.ui.keyActions = keyActions;
+  const rowGap = 10;
+  const totalHeight = rows.length * buttonHeight + rowGap * (rows.length - 1);
+  let buttonY = state.view.height - totalHeight - 14;
+
+  for (const row of rows) {
+    const rowWidth = row.reduce((sum, button) => sum + button.width, 0) + gap * (row.length - 1);
+    let buttonX = (state.view.width - rowWidth) / 2;
+    for (const button of row) {
+      drawFrameLines(button.frame, buttonX, buttonY, buttonLineHeight);
+      const underlineIndex = button.action.underlineIndex + 1;
+      const underlineX = buttonX + charWidth * (1 + underlineIndex);
+      const underlineY = buttonY + buttonLineHeight * 2 - 4;
+      ctx.fillStyle = '#8bffb0';
+      ctx.fillRect(underlineX, underlineY, charWidth, 2);
+
+      const rect = {
+        x: buttonX,
+        y: buttonY,
+        width: button.width,
+        height: buttonHeight,
+      };
+      state.ui.rects.push(rect);
+      if (button.action.clickable) {
+        state.ui.keyActions.push({
+          type: button.action.type,
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+        });
+      }
+      buttonX += button.width + gap;
+    }
+    buttonY += buttonHeight + rowGap;
+  }
 }
 
 function nodeColors(status) {
@@ -533,7 +895,7 @@ function drawNode(node) {
   ctx.fillStyle = colors.text;
   const label = node.status === 'unknown' || node.scanLevel === 0 ? 'UNKNOWN' : node.type.toUpperCase();
   const shortLabel = label.length > 12 ? label.slice(0, 12) : label;
-  ctx.fillText(shortLabel, pos.x, pos.y + size / 2 + 6);
+  ctx.fillText(shortLabel, pos.x, pos.y + size / 2 + config.labelOffset);
 
   if (node.failTimer > 0) {
     ctx.fillStyle = '#ff5f5f';
@@ -571,10 +933,15 @@ function drawGameOver() {
 }
 
 function draw() {
+  state.ui.rects = [];
+  state.ui.keyActions = [];
   drawBackground();
   drawConnections();
   for (const node of state.nodes) {
     drawNode(node);
+  }
+  if (state.shop.open) {
+    drawShop();
   }
   drawHud();
   drawScanlines();
@@ -624,8 +991,20 @@ function selectDirection(dx, dy) {
 
 function onKeyDown(event) {
   const key = event.key.toLowerCase();
-  if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'tab', 's', 'h'].includes(key)) {
+  if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'tab', 's', 'h', 'u', 'enter', 'escape'].includes(key)) {
     event.preventDefault();
+  }
+  if (state.shop.open) {
+    if (key === 'arrowup') {
+      state.shop.selectedIndex = (state.shop.selectedIndex - 1 + UPGRADE_OPTIONS.length) % UPGRADE_OPTIONS.length;
+    } else if (key === 'arrowdown') {
+      state.shop.selectedIndex = (state.shop.selectedIndex + 1) % UPGRADE_OPTIONS.length;
+    } else if (key === 'enter') {
+      attemptPurchase(state.shop.selectedIndex);
+    } else if (key === 'u' || key === 'escape') {
+      toggleShop();
+    }
+    return;
   }
   if (key === 'tab') {
     selectNext(event.shiftKey ? -1 : 1);
@@ -643,6 +1022,8 @@ function onKeyDown(event) {
     startScan(getNodeById(state.selectedId));
   } else if (key === 'h') {
     startHack(getNodeById(state.selectedId));
+  } else if (key === 'u') {
+    toggleShop();
   }
 }
 
@@ -657,7 +1038,11 @@ function onPointerDown(event) {
   state.pointer.startY = y;
   state.pointer.lastX = x;
   state.pointer.lastY = y;
-  state.pointer.mode = inUi ? 'ui' : 'map';
+  if (state.shop.open) {
+    state.pointer.mode = 'shop';
+  } else {
+    state.pointer.mode = inUi ? 'ui' : 'map';
+  }
   canvas.setPointerCapture(event.pointerId);
 }
 
@@ -672,7 +1057,7 @@ function onPointerMove(event) {
   const totalDy = y - state.pointer.startY;
   const dx = x - state.pointer.lastX;
   const dy = y - state.pointer.lastY;
-  if (state.pointer.mode === 'map') {
+  if (state.pointer.mode === 'map' && !state.shop.open) {
     if (!state.pointer.dragging && Math.hypot(totalDx, totalDy) > 4) {
       state.pointer.dragging = true;
     }
@@ -692,7 +1077,17 @@ function onPointerUp(event) {
   const rect = canvas.getBoundingClientRect();
   const x = event.clientX - rect.left;
   const y = event.clientY - rect.top;
-  if (!state.pointer.dragging) {
+  if (state.shop.open) {
+    if (!state.pointer.dragging) {
+      for (const item of state.shop.itemRects) {
+        if (isPointInRect(x, y, item)) {
+          state.shop.selectedIndex = item.index;
+          attemptPurchase(item.index);
+          break;
+        }
+      }
+    }
+  } else if (!state.pointer.dragging) {
     if (state.pointer.mode === 'ui') {
       for (const action of state.ui.keyActions) {
         if (isPointInRect(x, y, action)) {
@@ -701,6 +1096,8 @@ function onPointerUp(event) {
             startScan(node);
           } else if (action.type === 'hack') {
             startHack(node);
+          } else if (action.type === 'shop') {
+            toggleShop();
           }
           break;
         }

@@ -14,7 +14,7 @@ Get Hacken is a retro 80s hacker-themed HTML5 game played on a full-screen canva
 - Money (`$`): earned by stealing funds after a successful hack; spent on upgrades.
 - Hacking level (`*`): increases hack success chance (range 1-5).
 - Scanning level (`*`): reduces scan time (range 1-5).
-- Stealth level (`*`): reduces detection risk or failure penalties (range 1-5).
+- Stealth level (`*`): reduces the chance that a failed hack increases alert (range 1-5).
 
 ## Map, Nodes, and Discovery
 - The map is an expanding grid of nodes connected by adjacency rules (orthogonal neighbors by default).
@@ -25,6 +25,7 @@ Get Hacken is a retro 80s hacker-themed HTML5 game played on a full-screen canva
   - Scanned: white square; reveals attributes progressively with repeated scans.
   - Hacked: indicates success and can reveal 1-3 new adjacent unknown nodes.
 - Scanning reveals attributes progressively: scan 1 shows node type, scan 2 shows security level, scan 3 shows resource level.
+- After all attributes are known, additional scans can find vulnerabilities; each vulnerability reduces the target security by 1 (minimum 1).
 - Nodes show their type label once known; unknown nodes remain labeled as unknown on the map.
 
 ## Node Types and Security Bands
@@ -47,8 +48,11 @@ Get Hacken is a retro 80s hacker-themed HTML5 game played on a full-screen canva
 - ASCII boxes, lines, and labels for a TUI-like interface.
 - Input supports mouse/tap selection and keyboard shortcuts (arrow keys or tab to select, `S` to scan, `H` to hack).
 - Touch controls: tap nodes to select, tap the bottom TUI action labels to scan/hack, drag to pan the map.
+- Upgrade shop (`U`) overlays the map with a TUI list; use up/down to select and Enter/tap to buy.
+- A small console in the top right logs recent actions in a hacker-terminal style.
 
 ## Progression and Rewards
 - Hacking yields money and unlocks more nodes.
-- Money purchases hacking and scanning upgrades (`*`).
+- Money purchases hacking, scanning, and stealth upgrades (`*`).
+- Upgrade costs scale linearly: level 1->2 is $100, 2->3 is $200, 3->4 is $300, 4->5 is $400.
 - Endless progression; difficulty ramps by increasing security levels and lowering discovery rates.

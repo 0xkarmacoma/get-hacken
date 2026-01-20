@@ -7,10 +7,12 @@
 - Group modules by feature (for example, `src/world/`, `src/ui/`, `src/systems/`) rather than by file type.
 
 ## Build, Test, and Development Commands
-- No build tooling is required yet; the game runs as static files.
+- The game runs as static files, and a small build script can stage a deployable `dist/` folder.
 - Run the game locally from the repo root:
   - `python -m http.server 8000` — serves the project at `http://localhost:8000`.
   - Alternative: `npx serve .` — simple static server if Node is installed.
+- Build a deployable folder:
+  - `./scripts/build.sh` — copies `index.html` and `src/` into `dist/` (use this for Pages/Netlify/Vercel).
 - Tests: no automated tests are set up yet.
 
 ## Coding Style & Naming Conventions
