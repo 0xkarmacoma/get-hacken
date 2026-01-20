@@ -595,13 +595,7 @@ function drawShop() {
     };
   });
 
-  const headerLines = [
-    'Upgrade Console',
-    'Up/Down to select',
-    'Enter or tap to buy',
-    'U to exit',
-    '',
-  ];
+  const headerLines = [''];
   const itemLines = items.map((item, index) => `${index === state.shop.selectedIndex ? '>' : ' '} ${item.line}`);
   const footerLines = [
     '',

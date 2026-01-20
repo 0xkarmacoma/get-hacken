@@ -2,6 +2,8 @@
 
 Retro 80s hacker-themed HTML5 canvas game. Full-screen TUI/CRT aesthetic, keyboard + touch support.
 
+Live: https://0xkarmacoma.github.io/get-hacken/
+
 ## Run Locally
 - `python -m http.server 8000` — open `http://localhost:8000`
 - `npx serve .` — simple static server (requires Node)
